@@ -5,52 +5,25 @@ class TextEditMode {
     this.textItems = [];
     this.changes = [];
     this.currentPage = 1;
-    this.activeInput = null;
-    this.highlightCanvas = null;
-    this.highlightCtx = null;
-    this._clickHandler = null;
+    this.overlays = [];
+    this.activeOverlay = null;
     this._moveHandler = null;
-    this.hoveredIndex = -1;
   }
 
   activate(pageNum) {
     this.active = true;
     this.currentPage = pageNum;
     this.extractText(pageNum);
-    this.createHighlightCanvas();
-    this.bindEvents();
+    this.buildOverlays();
     this.updateStatus();
   }
 
   deactivate() {
     this.active = false;
-    this.removeActiveInput();
-    this.removeHighlightCanvas();
-    this.unbindEvents();
+    this.saveActiveOverlay();
+    this.destroyOverlays();
     this.textItems = [];
-    this.hoveredIndex = -1;
-  }
-
-  createHighlightCanvas() {
-    var wrapper = document.getElementById('canvas-wrapper');
-    if (!wrapper) return;
-    this.removeHighlightCanvas();
-    this.highlightCanvas = document.createElement('canvas');
-    this.highlightCanvas.id = 'text-highlight-canvas';
-    var mainCanvas = document.getElementById('pdf-canvas');
-    this.highlightCanvas.width = mainCanvas.width;
-    this.highlightCanvas.height = mainCanvas.height;
-    this.highlightCanvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;pointer-events:none;';
-    wrapper.appendChild(this.highlightCanvas);
-    this.highlightCtx = this.highlightCanvas.getContext('2d');
-  }
-
-  removeHighlightCanvas() {
-    if (this.highlightCanvas) {
-      this.highlightCanvas.remove();
-      this.highlightCanvas = null;
-      this.highlightCtx = null;
-    }
+    this.unbindEvents();
   }
 
   async extractText(pageNum) {
@@ -64,8 +37,9 @@ class TextEditMode {
 
       var canvasW = this.pdfViewer.canvas.width;
       var canvasH = this.pdfViewer.canvas.height;
-      var displayW = canvasW / (this.pdfViewer.dpr || 1);
-      var displayH = canvasH / (this.pdfViewer.dpr || 1);
+      var dpr = this.pdfViewer.dpr || 1;
+      var displayW = canvasW / dpr;
+      var displayH = canvasH / dpr;
 
       var scaleX = displayW / viewport.width;
       var scaleY = displayH / viewport.height;
@@ -73,6 +47,7 @@ class TextEditMode {
       var items = textContent.items;
       var lines = [];
       var currentLine = null;
+      var lastY = null;
       var tolerance = 4;
 
       var sorted = items.slice().sort(function(a, b) {
@@ -105,7 +80,9 @@ class TextEditMode {
           var lineEndX = (tx + w) * scaleX;
           var lineEndY = (viewport.height - ty - h) * scaleY;
           currentLine.w = Math.max(currentLine.w, lineEndX - currentLine.x);
-          currentLine.h = Math.max(currentLine.h, (lineEndY + ih) - currentLine.y);
+          var newBottom = lineEndY + ih;
+          var oldBottom = currentLine.y + currentLine.h;
+          currentLine.h = Math.max(currentLine.h, newBottom - currentLine.y);
           currentLine.fontSize = Math.max(currentLine.fontSize, ih);
         } else {
           currentLine = {
@@ -115,7 +92,8 @@ class TextEditMode {
             w: iw,
             h: ih,
             fontSize: ih,
-            fontName: item.fontName || 'helvetica'
+            fontName: item.fontName || 'helvetica',
+            modified: false
           };
           lines.push(currentLine);
           lastY = lineY;
@@ -128,205 +106,166 @@ class TextEditMode {
     }
   }
 
-  bindEvents() {
-    var self = this;
-    var annotationCanvas = document.getElementById('annotation-canvas');
-
-    this._clickHandler = function(e) { self.onCanvasClick(e); };
-    this._moveHandler = function(e) { self.onCanvasMove(e); };
-
-    annotationCanvas.addEventListener('click', this._clickHandler);
-    annotationCanvas.addEventListener('mousemove', this._moveHandler);
-  }
-
-  unbindEvents() {
-    var annotationCanvas = document.getElementById('annotation-canvas');
-    if (annotationCanvas && this._clickHandler) {
-      annotationCanvas.removeEventListener('click', this._clickHandler);
-    }
-    if (annotationCanvas && this._moveHandler) {
-      annotationCanvas.removeEventListener('mousemove', this._moveHandler);
-    }
-    this._clickHandler = null;
-    this._moveHandler = null;
-  }
-
-  getCanvasPos(e) {
-    var rect = e.target.getBoundingClientRect();
-    var sx = this.pdfViewer.canvas.width / rect.width;
-    var sy = this.pdfViewer.canvas.height / rect.height;
-    return {
-      x: (e.clientX - rect.left) * sx,
-      y: (e.clientY - rect.top) * sy
-    };
-  }
-
-  findTextAt(pos) {
-    for (var i = 0; i < this.textItems.length; i++) {
-      var item = this.textItems[i];
-      if (pos.x >= item.x - 5 && pos.x <= item.x + item.w + 5 &&
-          pos.y >= item.y - 5 && pos.y <= item.y + item.h + 5) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
-  onCanvasMove(e) {
-    if (!this.active) return;
-    var pos = this.getCanvasPos(e);
-    var idx = this.findTextAt(pos);
-
-    var annotationCanvas = document.getElementById('annotation-canvas');
-    if (idx >= 0) {
-      annotationCanvas.style.cursor = 'text';
-      if (idx !== this.hoveredIndex) {
-        this.hoveredIndex = idx;
-        this.drawHighlights();
-      }
-    } else {
-      annotationCanvas.style.cursor = 'crosshair';
-      if (this.hoveredIndex !== -1) {
-        this.hoveredIndex = -1;
-        this.drawHighlights();
-      }
-    }
-  }
-
-  onCanvasClick(e) {
-    if (!this.active) return;
-    var pos = this.getCanvasPos(e);
-    var idx = this.findTextAt(pos);
-
-    if (idx >= 0) {
-      this.removeActiveInput();
-      this.createFloatingInput(idx, pos);
-    } else {
-      this.removeActiveInput();
-    }
-  }
-
-  createFloatingInput(textIndex, clickPos) {
-    var item = this.textItems[textIndex];
-    if (!item) return;
-
+  buildOverlays() {
+    this.destroyOverlays();
     var wrapper = document.getElementById('canvas-wrapper');
     if (!wrapper) return;
 
     var dpr = this.pdfViewer.dpr || 1;
-    var displayX = item.x / dpr;
-    var displayY = item.y / dpr;
-    var displayW = Math.max(item.w / dpr, 100);
-    var displayH = item.h / dpr;
-
-    var input = document.createElement('textarea');
-    input.value = item.text;
-    input.className = 'text-edit-floating-input';
-    input.style.cssText =
-      'position:absolute;z-index:20;' +
-      'left:' + displayX + 'px;' +
-      'top:' + displayY + 'px;' +
-      'width:' + displayW + 'px;' +
-      'height:' + (displayH + 6) + 'px;' +
-      'font-size:' + (item.fontSize / dpr) + 'px;' +
-      'font-family:Helvetica,Arial,sans-serif;' +
-      'color:#000;' +
-      'background:rgba(255,255,255,0.97);' +
-      'border:2px solid #6c63ff;' +
-      'border-radius:3px;' +
-      'padding:2px 4px;' +
-      'outline:none;' +
-      'resize:none;' +
-      'overflow:hidden;' +
-      'line-height:1.2;' +
-      'white-space:pre-wrap;' +
-      'box-shadow:0 2px 12px rgba(108,99,255,0.25);';
-
-    var self = this;
-
-    input.addEventListener('blur', function() {
-      self.finishInput(textIndex, input);
-    });
-
-    input.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') {
-        input.blur();
-      }
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        input.blur();
-      }
-    });
-
-    wrapper.appendChild(input);
-    this.activeInput = input;
-
-    input.focus();
-    input.select();
-  }
-
-  finishInput(textIndex, input) {
-    var item = this.textItems[textIndex];
-    var newText = input.value;
-
-    if (newText !== item.text && newText.trim() !== '') {
-      this.changes.push({
-        pageIndex: this.currentPage,
-        textIndex: textIndex,
-        originalText: item.text,
-        newText: newText,
-        x: item.x,
-        y: item.y,
-        w: item.w,
-        h: item.h,
-        fontSize: item.fontSize
-      });
-      item.text = newText;
-      if (window.app) window.app.showToast('Texto modificado: "' + newText.substring(0, 20) + '..."', 'info');
-    }
-
-    input.remove();
-    this.activeInput = null;
-    this.drawHighlights();
-  }
-
-  removeActiveInput() {
-    if (this.activeInput) {
-      this.activeInput.remove();
-      this.activeInput = null;
-    }
-  }
-
-  drawHighlights() {
-    if (!this.highlightCtx) return;
-    var ctx = this.highlightCtx;
-    var dpr = this.pdfViewer.dpr || 1;
-
-    ctx.clearRect(0, 0, this.highlightCanvas.width, this.highlightCanvas.height);
 
     for (var i = 0; i < this.textItems.length; i++) {
       var item = this.textItems[i];
-      var isHovered = (i === this.hoveredIndex);
+      var div = document.createElement('div');
+      div.className = 'text-edit-overlay-block';
+      div.dataset.index = i;
 
-      ctx.strokeStyle = isHovered ? '#6c63ff' : 'rgba(108,99,255,0.3)';
-      ctx.lineWidth = isHovered ? 2.5 : 1.5;
-      ctx.setLineDash(isHovered ? [] : [4, 3]);
+      var pad = 3;
+      div.style.left = (item.x - pad) + 'px';
+      div.style.top = (item.y - pad) + 'px';
+      div.style.width = (item.w + pad * 2) + 'px';
+      div.style.height = (item.h + pad * 2) + 'px';
+      div.style.fontSize = (item.fontSize * 0.95) + 'px';
+      div.style.lineHeight = '1.2';
+      div.style.fontFamily = 'Helvetica, Arial, sans-serif';
+      div.textContent = item.text;
 
-      ctx.strokeRect(item.x - 2, item.y - 2, item.w + 4, item.h + 4);
+      this.setupOverlayEvents(div, i);
+      wrapper.appendChild(div);
+      this.overlays.push(div);
+    }
+  }
 
-      if (isHovered) {
-        ctx.fillStyle = 'rgba(108,99,255,0.08)';
-        ctx.fillRect(item.x - 2, item.y - 2, item.w + 4, item.h + 4);
+  setupOverlayEvents(div, index) {
+    var self = this;
+
+    div.addEventListener('mouseenter', function() {
+      if (div.classList.contains('editing')) return;
+      div.classList.add('hovered');
+    });
+
+    div.addEventListener('mouseleave', function() {
+      div.classList.remove('hovered');
+    });
+
+    div.addEventListener('mousedown', function(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      self.startEditingOverlay(div, index);
+    });
+  }
+
+  startEditingOverlay(div, index) {
+    this.saveActiveOverlay();
+
+    var item = this.textItems[index];
+    this.activeOverlay = { div: div, index: index };
+
+    div.classList.add('editing');
+    div.classList.remove('hovered');
+    div.contentEditable = 'true';
+    div.spellcheck = false;
+
+    var range = document.createRange();
+    range.selectNodeContents(div);
+    range.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    div.focus();
+
+    var self = this;
+
+    var onBlur = function() {
+      div.removeEventListener('blur', onBlur);
+      div.removeEventListener('keydown', onKeydown);
+      self.finishEditingOverlay(div, index);
+    };
+
+    var onKeydown = function(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        div.blur();
       }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        div.blur();
+      }
+    };
+
+    div.addEventListener('blur', onBlur);
+    div.addEventListener('keydown', onKeydown);
+  }
+
+  saveActiveOverlay() {
+    if (!this.activeOverlay) return;
+    var div = this.activeOverlay.div;
+    var index = this.activeOverlay.index;
+
+    if (div.classList.contains('editing')) {
+      div.contentEditable = 'false';
+      div.classList.remove('editing');
     }
 
-    ctx.setLineDash([]);
+    this.activeOverlay = null;
+  }
+
+  finishEditingOverlay(div, index) {
+    var item = this.textItems[index];
+    var newText = div.textContent || div.innerText;
+
+    div.contentEditable = 'false';
+    div.classList.remove('editing');
+
+    if (newText !== item.text && newText.trim() !== '') {
+      var alreadyChanged = false;
+      for (var c = 0; c < this.changes.length; c++) {
+        if (this.changes[c].textIndex === index && this.changes[c].pageIndex === this.currentPage) {
+          this.changes[c].newText = newText;
+          alreadyChanged = true;
+          break;
+        }
+      }
+
+      if (!alreadyChanged) {
+        this.changes.push({
+          pageIndex: this.currentPage,
+          textIndex: index,
+          originalText: item.text,
+          newText: newText,
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+          fontSize: item.fontSize
+        });
+      }
+
+      item.text = newText;
+      div.textContent = newText;
+      item.modified = true;
+      if (window.app) window.app.showToast('Texto editado', 'info');
+    }
+
+    this.activeOverlay = null;
+  }
+
+  destroyOverlays() {
+    for (var i = 0; i < this.overlays.length; i++) {
+      if (this.overlays[i] && this.overlays[i].parentNode) {
+        this.overlays[i].remove();
+      }
+    }
+    this.overlays = [];
+  }
+
+  unbindEvents() {
   }
 
   updateStatus() {
     if (this.active && window.app) {
       document.getElementById('status-tool').textContent =
-        'Herramienta: Editar texto (' + this.textItems.length + ' bloques detectados)';
+        'Modo edicion: ' + this.textItems.length + ' bloques de texto detectados';
     }
   }
 
@@ -344,8 +283,9 @@ class TextEditMode {
         var pageData = await this.pdfViewer.pdfDoc.getPage(change.pageIndex);
         var viewport = pageData.getViewport({ scale: 1 });
         var canvasW = this.pdfViewer.canvas.width;
-        var displayW = canvasW / (this.pdfViewer.dpr || 1);
-        var displayH = this.pdfViewer.canvas.height / (this.pdfViewer.dpr || 1);
+        var dpr = this.pdfViewer.dpr || 1;
+        var displayW = canvasW / dpr;
+        var displayH = this.pdfViewer.canvas.height / dpr;
         var scaleX = viewport.width / displayW;
         var scaleY = viewport.height / displayH;
         var pageH = page.getHeight();

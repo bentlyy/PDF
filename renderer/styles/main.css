@@ -634,3 +634,40 @@ body.light-theme .sig-upload-area {
   border-color: #6c63ff !important;
   box-shadow: 0 2px 16px rgba(108,99,255,0.35) !important;
 }
+
+/* Text Edit Overlay Blocks */
+.text-edit-overlay-block {
+  position: absolute;
+  z-index: 12;
+  cursor: text;
+  color: transparent;
+  background: transparent;
+  border: 1.5px solid transparent;
+  border-radius: 2px;
+  padding: 2px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  outline: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  -webkit-user-select: none;
+  user-select: none;
+  line-height: 1.2;
+}
+
+.text-edit-overlay-block.hovered {
+  border-color: rgba(108, 99, 255, 0.45);
+  background: rgba(108, 99, 255, 0.06);
+}
+
+.text-edit-overlay-block.editing {
+  color: #000 !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: #6c63ff !important;
+  box-shadow: 0 1px 8px rgba(108, 99, 255, 0.25);
+  white-space: pre-wrap;
+  overflow: visible;
+  -webkit-user-select: text;
+  user-select: text;
+  min-width: 60px;
+  z-index: 20;
+}
