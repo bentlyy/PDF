@@ -7,6 +7,16 @@ class App {
     this.currentFilePath = null;
     this.currentFileName = null;
 
+    this.textEditMode = null;
+    this.findReplace = null;
+    this.tabsManager = null;
+    this.watermarkTool = null;
+    this.compressTool = null;
+    this.bookmarksPanel = null;
+    this.redactTool = null;
+    this.formsTool = null;
+    this.isLightTheme = false;
+
     this.init();
   }
 
@@ -15,6 +25,9 @@ class App {
     this.setupDragDrop();
     this.setupMenuListeners();
     this.setupKeyboardShortcuts();
+    this.compressTool = new CompressTool();
+    this.watermarkTool = new WatermarkTool(null);
+    this.bookmarksPanel = new BookmarksPanel(null);
   }
 
   setupEventListeners() {
@@ -37,6 +50,10 @@ class App {
     document.getElementById('btn-prev-page').addEventListener('click', function() { if (self.pdfViewer) self.pdfViewer.prevPage(); });
     document.getElementById('btn-next-page').addEventListener('click', function() { if (self.pdfViewer) self.pdfViewer.nextPage(); });
 
+    document.getElementById('btn-find').addEventListener('click', function() { if (self.findReplace) self.findReplace.toggle(); });
+    document.getElementById('btn-compress').addEventListener('click', function() { self.compressTool.compressPdf(); });
+    document.getElementById('btn-theme-toggle').addEventListener('click', function() { self.toggleTheme(); });
+
     document.getElementById('page-input').addEventListener('change', function(e) {
       var page = parseInt(e.target.value);
       if (self.pdfViewer && page >= 1 && page <= self.pdfViewer.totalPages) {
@@ -44,7 +61,6 @@ class App {
       }
     });
 
-    // Property changes
     document.getElementById('prop-color').addEventListener('input', function(e) {
       if (self.annotationLayer) self.annotationLayer.setStrokeColor(e.target.value);
     });
@@ -75,17 +91,14 @@ class App {
       if (self.annotationLayer) self.annotationLayer.setShapeType(e.target.value);
     });
 
-    // Sidebar tabs
     document.querySelectorAll('.sidebar-tab').forEach(function(tab) {
       tab.addEventListener('click', function() { self.switchSidebarTab(tab.dataset.tab); });
     });
 
-    // Tool buttons
     document.querySelectorAll('.tool-btn[data-tool]').forEach(function(btn) {
       btn.addEventListener('click', function() { self.selectTool(btn.dataset.tool); });
     });
 
-    // Modal close buttons
     document.querySelectorAll('.modal-close, .modal-cancel, .modal-overlay').forEach(function(el) {
       el.addEventListener('click', function(e) {
         var modal = e.target.closest('.modal');
@@ -93,14 +106,10 @@ class App {
       });
     });
 
-    // Merge modal
     document.getElementById('btn-add-merge-files').addEventListener('click', function() { self.addMergeFiles(); });
     document.getElementById('btn-do-merge').addEventListener('click', function() { self.doMerge(); });
-
-    // Export modal
     document.getElementById('btn-do-export').addEventListener('click', function() { self.doExport(); });
 
-    // Signature modal
     this.setupSignatureModal();
   }
 
@@ -166,6 +175,7 @@ class App {
     var self = this;
     document.addEventListener('keydown', function(e) {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+      if (e.target.isContentEditable) return;
 
       if (e.ctrlKey || e.metaKey) {
         switch (e.key.toLowerCase()) {
@@ -175,11 +185,18 @@ class App {
           case 'z': e.preventDefault(); self.undo(); break;
           case 'y': e.preventDefault(); self.redo(); break;
           case 't': e.preventDefault(); self.toggleSidebar(); break;
+          case 'f': e.preventDefault(); if (self.findReplace) self.findReplace.toggle(); break;
+          case 'h': e.preventDefault(); self.toggleTheme(); break;
+          case 'w': e.preventDefault(); if (self.tabsManager) self.closeCurrentTab(); break;
           case '=': case '+': e.preventDefault(); if (self.pdfViewer) self.pdfViewer.zoomIn(); break;
           case '-': e.preventDefault(); if (self.pdfViewer) self.pdfViewer.zoomOut(); break;
           case '0': e.preventDefault(); if (self.pdfViewer) self.pdfViewer.setZoom(1); break;
           case '1': e.preventDefault(); if (self.pdfViewer) self.pdfViewer.fitWidth(); break;
           case '2': e.preventDefault(); if (self.pdfViewer) self.pdfViewer.fitPage(); break;
+        }
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          self.nextTab();
         }
         return;
       }
@@ -192,13 +209,17 @@ class App {
         case 'v': case 'V':
           self.selectTool('select'); break;
         case 't': case 'T':
-          if (!e.ctrlKey) self.selectTool('text'); break;
+          self.selectTool('text'); break;
         case 'd': case 'D':
           self.selectTool('draw'); break;
         case 's': case 'S':
-          if (!e.ctrlKey) self.selectTool('shapes'); break;
+          self.selectTool('shapes'); break;
         case 'i': case 'I':
           self.selectTool('image'); break;
+        case 'e': case 'E':
+          self.selectTool('edit-text'); break;
+        case 'w': case 'W':
+          self.selectTool('watermark'); break;
       }
     });
   }
@@ -301,7 +322,11 @@ class App {
     if (api) {
       var result = await api.openFile();
       if (result) {
-        self.loadPdf(result.data, result.filePath, result.name);
+        if (self.tabsManager && self.tabsManager.hasOpenTabs()) {
+          self.tabsManager.addTab(result.name, result.data, result.filePath);
+        } else {
+          self.loadPdf(result.data, result.filePath, result.name);
+        }
       }
     } else {
       var input = document.createElement('input');
@@ -315,7 +340,11 @@ class App {
   async loadPdfFromFile(file) {
     var arrayBuffer = await file.arrayBuffer();
     var data = Array.from(new Uint8Array(arrayBuffer));
-    this.loadPdf(data, null, file.name);
+    if (this.tabsManager && this.tabsManager.hasOpenTabs()) {
+      this.tabsManager.addTab(file.name, data, null);
+    } else {
+      this.loadPdf(data, null, file.name);
+    }
   }
 
   async loadPdf(data, filePath, fileName) {
@@ -331,7 +360,23 @@ class App {
         this.annotationLayer = new AnnotationLayer(this.pdfViewer);
         this.thumbnailPanel = new ThumbnailPanel(this.pdfViewer);
         this.toolbar = new Toolbar(this.pdfViewer, this.annotationLayer);
+        this.textEditMode = new TextEditMode(this.pdfViewer);
+        this.findReplace = new FindReplace(this.pdfViewer);
+        this.findReplace.init();
+        this.tabsManager = new TabsManager();
+        this.redactTool = new RedactTool(this.pdfViewer);
+        this.formsTool = new FormsTool(this.pdfViewer);
+        this.bookmarksPanel = new BookmarksPanel(this.pdfViewer);
+        this.bookmarksPanel.init();
+      } else {
+        this.textEditMode.pdfViewer = this.pdfViewer;
+        this.findReplace.pdfViewer = this.pdfViewer;
+        this.redactTool.pdfViewer = this.pdfViewer;
+        this.formsTool.pdfViewer = this.pdfViewer;
+        this.bookmarksPanel.pdfViewer = this.pdfViewer;
       }
+
+      this.watermarkTool.pdfViewer = this.pdfViewer;
 
       await this.pdfViewer.loadDocument(data);
 
@@ -339,6 +384,10 @@ class App {
       this.thumbnailPanel.render();
       this.updateStatusBar();
       this.updateTitle();
+
+      if (this.textEditMode.active) {
+        this.textEditMode.deactivate();
+      }
 
       document.getElementById('status-file').textContent = fileName || 'Sin archivo';
     } catch (err) {
@@ -352,10 +401,31 @@ class App {
     var api = window.electronAPI;
 
     try {
-      var pdfBytes = await this.annotationLayer.saveToPdf();
+      var PDFDocument = PDFLib.PDFDocument;
+      var pdfData = await this.pdfViewer.pdfDoc.getData();
+      var pdfBytes = new Uint8Array(pdfData);
+      var pdfDoc = await PDFDocument.load(pdfBytes);
+
+      if (this.textEditMode && this.textEditMode.changes.length > 0) {
+        await this.textEditMode.applyChangesToPdf(pdfDoc);
+      }
+
+      var allBytes = await this.annotationLayer.saveToPdf();
+
+      if (this.redactTool && this.redactTool.regions.length > 0) {
+        allBytes = await this.redactTool.applyRedaction(pdfDoc);
+      }
+
+      if (this.formsTool && this.formsTool.fields.length > 0) {
+        allBytes = await this.formsTool.applyFormFields(pdfDoc);
+      }
+
+      if (this.bookmarksPanel && this.bookmarksPanel.bookmarks.length > 0) {
+        allBytes = await this.bookmarksPanel.applyBookmarksToPdf(pdfDoc);
+      }
 
       if (this.currentFilePath && api) {
-        var success = await api.saveFileDirect({ filePath: this.currentFilePath, data: Array.from(pdfBytes) });
+        var success = await api.saveFileDirect({ filePath: this.currentFilePath, data: Array.from(allBytes) });
         if (success) {
           this.showToast('PDF guardado correctamente', 'success');
         } else {
@@ -432,18 +502,60 @@ class App {
     var btn = document.querySelector('[data-tool="' + tool + '"]');
     if (btn) btn.classList.add('active');
 
-    if (this.annotationLayer) {
-      this.annotationLayer.setTool(tool);
+    if (this.textEditMode && this.textEditMode.active && tool !== 'edit-text') {
+      this.textEditMode.deactivate();
     }
+    if (this.redactTool) this.redactTool.deactivate();
+    if (this.formsTool) this.formsTool.deactivate();
 
-    document.getElementById('text-props').style.display = tool === 'text' ? 'block' : 'none';
-    document.getElementById('shape-props').style.display = tool === 'shapes' ? 'block' : 'none';
-    document.getElementById('draw-props').style.display = tool === 'draw' ? 'block' : 'none';
+    if (tool === 'edit-text') {
+      if (this.annotationLayer) this.annotationLayer.setTool('select');
+      if (this.textEditMode) {
+        this.textEditMode.activate(this.pdfViewer.currentPage);
+      }
+      document.getElementById('text-props').style.display = 'none';
+      document.getElementById('shape-props').style.display = 'none';
+      document.getElementById('draw-props').style.display = 'none';
+    } else if (tool === 'watermark') {
+      if (this.watermarkTool) this.watermarkTool.showModal();
+      if (this.annotationLayer) this.annotationLayer.setTool('select');
+      document.getElementById('text-props').style.display = 'none';
+      document.getElementById('shape-props').style.display = 'none';
+      document.getElementById('draw-props').style.display = 'none';
+    } else if (tool === 'redact') {
+      if (this.annotationLayer) this.annotationLayer.setTool('select');
+      if (this.redactTool) this.redactTool.activate();
+      document.getElementById('text-props').style.display = 'none';
+      document.getElementById('shape-props').style.display = 'none';
+      document.getElementById('draw-props').style.display = 'none';
+    } else if (tool === 'form-text') {
+      if (this.annotationLayer) this.annotationLayer.setTool('select');
+      if (this.formsTool) this.formsTool.activate('text');
+      document.getElementById('text-props').style.display = 'none';
+      document.getElementById('shape-props').style.display = 'none';
+      document.getElementById('draw-props').style.display = 'none';
+    } else if (tool === 'form-check') {
+      if (this.annotationLayer) this.annotationLayer.setTool('select');
+      if (this.formsTool) this.formsTool.activate('checkbox');
+      document.getElementById('text-props').style.display = 'none';
+      document.getElementById('shape-props').style.display = 'none';
+      document.getElementById('draw-props').style.display = 'none';
+    } else {
+      if (this.annotationLayer) {
+        this.annotationLayer.setTool(tool);
+      }
+
+      document.getElementById('text-props').style.display = tool === 'text' ? 'block' : 'none';
+      document.getElementById('shape-props').style.display = tool === 'shapes' ? 'block' : 'none';
+      document.getElementById('draw-props').style.display = tool === 'draw' ? 'block' : 'none';
+    }
 
     var toolNames = {
       select: 'Seleccionar', text: 'Texto', draw: 'Dibujar',
       shapes: 'Formas', image: 'Imagen', signature: 'Firma',
-      highlight: 'Resaltar', eraser: 'Borrar'
+      highlight: 'Resaltar', eraser: 'Borrar',
+      'edit-text': 'Editar texto', watermark: 'Marca de agua',
+      redact: 'Redactar', 'form-text': 'Formulario', 'form-check': 'Checkbox'
     };
     document.getElementById('status-tool').textContent = 'Herramienta: ' + (toolNames[tool] || tool);
 
@@ -457,6 +569,25 @@ class App {
     if (this.annotationLayer) {
       this.annotationLayer.setTextStyle(style, btn.classList.contains('active'));
     }
+  }
+
+  toggleTheme() {
+    this.isLightTheme = !this.isLightTheme;
+    document.body.classList.toggle('light-theme', this.isLightTheme);
+    this.showToast(this.isLightTheme ? 'Tema claro' : 'Tema oscuro', 'info');
+  }
+
+  closeCurrentTab() {
+    if (this.tabsManager && this.tabsManager.activeTabId) {
+      this.tabsManager.closeTab(this.tabsManager.activeTabId);
+    }
+  }
+
+  nextTab() {
+    if (!this.tabsManager || this.tabsManager.tabs.length <= 1) return;
+    var idx = this.tabsManager.tabs.findIndex(function(t) { return t.id === this.tabsManager.activeTabId; }.bind(this));
+    var next = (idx + 1) % this.tabsManager.tabs.length;
+    this.tabsManager.switchTab(this.tabsManager.tabs[next].id);
   }
 
   async handleImageTool() {
@@ -509,7 +640,6 @@ class App {
     }, 3000);
   }
 
-  // Merge
   showMergeModal() {
     this.mergeFiles = [];
     document.getElementById('merge-file-list').innerHTML = '<p class="empty-text">No hay archivos seleccionados</p>';
@@ -585,7 +715,6 @@ class App {
     }
   }
 
-  // Export
   showExportModal() {
     if (!this.pdfViewer) return;
     document.getElementById('export-modal').classList.remove('hidden');

@@ -199,6 +199,25 @@ class AnnotationLayer {
     this.saveState();
   }
 
+  addTextWithContent(pos, content) {
+    var text = new fabric.Textbox(content || '', {
+      left: pos.x,
+      top: pos.y,
+      fontSize: this.fontSize,
+      fontFamily: this.fontFamily,
+      fill: this.strokeColor,
+      fontWeight: this.fontBold ? 'bold' : 'normal',
+      fontStyle: this.fontItalic ? 'italic' : 'normal',
+      underline: this.fontUnderline,
+      width: 200,
+      editable: true
+    });
+
+    this.objects.push(text);
+    this.renderAll();
+    this.saveState();
+  }
+
   // Drawing (freehand)
   startDrawing(pos) {
     this.isDrawing = true;
