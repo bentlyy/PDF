@@ -2,260 +2,337 @@ class TextEditMode {
   constructor(pdfViewer) {
     this.pdfViewer = pdfViewer;
     this.active = false;
-    this.textBlocks = [];
+    this.textItems = [];
     this.changes = [];
-    this.overlayContainer = null;
     this.currentPage = 1;
-    this.scaleX = 1;
-    this.scaleY = 1;
+    this.activeInput = null;
+    this.highlightCanvas = null;
+    this.highlightCtx = null;
+    this._clickHandler = null;
+    this._moveHandler = null;
+    this.hoveredIndex = -1;
   }
 
   activate(pageNum) {
     this.active = true;
     this.currentPage = pageNum;
-    this.createOverlayContainer();
-    this.extractAndOverlay(pageNum);
+    this.extractText(pageNum);
+    this.createHighlightCanvas();
+    this.bindEvents();
+    this.updateStatus();
   }
 
   deactivate() {
     this.active = false;
-    this.textBlocks = [];
-    this.changes = [];
-    if (this.overlayContainer) {
-      this.overlayContainer.remove();
-      this.overlayContainer = null;
-    }
+    this.removeActiveInput();
+    this.removeHighlightCanvas();
+    this.unbindEvents();
+    this.textItems = [];
+    this.hoveredIndex = -1;
   }
 
-  createOverlayContainer() {
+  createHighlightCanvas() {
     var wrapper = document.getElementById('canvas-wrapper');
     if (!wrapper) return;
-    if (this.overlayContainer) this.overlayContainer.remove();
-    this.overlayContainer = document.createElement('div');
-    this.overlayContainer.id = 'text-edit-overlay';
-    this.overlayContainer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:10;pointer-events:none;';
-    wrapper.appendChild(this.overlayContainer);
+    this.removeHighlightCanvas();
+    this.highlightCanvas = document.createElement('canvas');
+    this.highlightCanvas.id = 'text-highlight-canvas';
+    var mainCanvas = document.getElementById('pdf-canvas');
+    this.highlightCanvas.width = mainCanvas.width;
+    this.highlightCanvas.height = mainCanvas.height;
+    this.highlightCanvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;pointer-events:none;';
+    wrapper.appendChild(this.highlightCanvas);
+    this.highlightCtx = this.highlightCanvas.getContext('2d');
   }
 
-  async extractAndOverlay(pageNum) {
-    if (!this.pdfViewer.pdfDoc || !this.active) return;
-
-    var page = await this.pdfViewer.pdfDoc.getPage(pageNum);
-    var textContent = await page.getTextContent();
-    var viewport = page.getViewport({ scale: this.pdfViewer.getScale() });
-
-    var canvasW = this.pdfViewer.canvas.width;
-    var canvasH = this.pdfViewer.canvas.height;
-    var displayW = canvasW / (this.pdfViewer.dpr || 1);
-    var displayH = canvasH / (this.pdfViewer.dpr || 1);
-
-    var scaleX = displayW / viewport.width;
-    var scaleY = displayH / viewport.height;
-
-    this.textBlocks = [];
-    this.groupTextItems(textContent.items, viewport, scaleX, scaleY);
-    this.renderOverlays();
-  }
-
-  groupTextItems(items, viewport, scaleX, scaleY) {
-    var lines = [];
-    var currentLine = null;
-    var lastY = null;
-    var tolerance = 3;
-
-    var sorted = items.slice().sort(function(a, b) {
-      var ay = a.transform[5];
-      var by = b.transform[5];
-      if (Math.abs(ay - by) < tolerance) return a.transform[4] - b.transform[4];
-      return by - ay;
-    });
-
-    for (var i = 0; i < sorted.length; i++) {
-      var item = sorted[i];
-      if (!item.str || item.str.trim() === '') continue;
-
-      var tx = item.transform[4];
-      var ty = item.transform[5];
-      var w = item.width;
-      var h = item.height;
-
-      var displayX = tx * scaleX;
-      var displayY = (viewport.height - ty - h) * scaleY;
-      var displayW = w * scaleX;
-      var displayH = h * scaleY;
-
-      var fontSize = Math.abs(h) * scaleY;
-      if (fontSize < 4) continue;
-
-      var lineY = Math.round(ty / tolerance) * tolerance;
-
-      if (currentLine && Math.abs(lineY - lastY) < tolerance) {
-        currentLine.items.push(item);
-        currentLine.text += item.str;
-        var lineEndX = (tx + w) * scaleX;
-        var lineEndY = (viewport.height - ty - h) * scaleY;
-        currentLine.displayW = Math.max(currentLine.displayW, lineEndX - currentLine.displayX);
-        currentLine.displayY = Math.min(currentLine.displayY, displayY);
-        currentLine.displayH = Math.max(currentLine.displayH, lineEndY - currentLine.displayY + displayH);
-        currentLine.fontSize = Math.max(currentLine.fontSize, fontSize);
-      } else {
-        currentLine = {
-          items: [item],
-          text: item.str,
-          displayX: displayX,
-          displayY: displayY,
-          displayW: displayW,
-          displayH: displayH,
-          fontSize: fontSize,
-          fontName: item.fontName || 'Helvetica',
-          color: '#000000',
-          originalText: item.str
-        };
-        lines.push(currentLine);
-        lastY = ty;
-      }
-    }
-
-    this.textBlocks = lines;
-  }
-
-  renderOverlays() {
-    if (!this.overlayContainer) return;
-    this.overlayContainer.innerHTML = '';
-
-    for (var i = 0; i < this.textBlocks.length; i++) {
-      var block = this.textBlocks[i];
-      var div = document.createElement('div');
-      div.className = 'text-edit-block';
-      div.contentEditable = 'false';
-      div.dataset.index = i;
-
-      var padding = 2;
-      div.style.cssText =
-        'position:absolute;pointer-events:auto;cursor:text;' +
-        'left:' + (block.displayX - padding) + 'px;' +
-        'top:' + (block.displayY - padding) + 'px;' +
-        'width:' + (block.displayW + padding * 2) + 'px;' +
-        'min-height:' + (block.displayH + padding * 2) + 'px;' +
-        'font-size:' + block.fontSize + 'px;' +
-        'font-family:Helvetica,Arial,sans-serif;' +
-        'color:transparent;' +
-        'line-height:1.2;' +
-        'white-space:nowrap;' +
-        'overflow:hidden;' +
-        'border:1px solid transparent;' +
-        'border-radius:2px;' +
-        'padding:2px 4px;' +
-        'transition:border-color 0.15s,background 0.15s;' +
-        'box-sizing:border-box;';
-
-      div.textContent = block.text;
-
-      this.setupBlockEvents(div, i);
-
-      this.overlayContainer.appendChild(div);
+  removeHighlightCanvas() {
+    if (this.highlightCanvas) {
+      this.highlightCanvas.remove();
+      this.highlightCanvas = null;
+      this.highlightCtx = null;
     }
   }
 
-  setupBlockEvents(div, index) {
-    var self = this;
+  async extractText(pageNum) {
+    if (!this.pdfViewer.pdfDoc) return;
+    this.textItems = [];
 
-    div.addEventListener('mouseenter', function() {
-      if (!div.isContentEditable || div.contentEditable === 'false') {
-        div.style.borderColor = 'rgba(108,99,255,0.5)';
-        div.style.background = 'rgba(108,99,255,0.08)';
+    try {
+      var page = await this.pdfViewer.pdfDoc.getPage(pageNum);
+      var textContent = await page.getTextContent();
+      var viewport = page.getViewport({ scale: 1 });
+
+      var canvasW = this.pdfViewer.canvas.width;
+      var canvasH = this.pdfViewer.canvas.height;
+      var displayW = canvasW / (this.pdfViewer.dpr || 1);
+      var displayH = canvasH / (this.pdfViewer.dpr || 1);
+
+      var scaleX = displayW / viewport.width;
+      var scaleY = displayH / viewport.height;
+
+      var items = textContent.items;
+      var lines = [];
+      var currentLine = null;
+      var tolerance = 4;
+
+      var sorted = items.slice().sort(function(a, b) {
+        var ay = a.transform[5];
+        var by = b.transform[5];
+        if (Math.abs(ay - by) < tolerance) return a.transform[4] - b.transform[4];
+        return by - ay;
+      });
+
+      for (var i = 0; i < sorted.length; i++) {
+        var item = sorted[i];
+        if (!item.str || item.str.trim() === '') continue;
+
+        var tx = item.transform[4];
+        var ty = item.transform[5];
+        var w = item.width;
+        var h = item.height;
+
+        var x = tx * scaleX;
+        var y = (viewport.height - ty - h) * scaleY;
+        var iw = w * scaleX;
+        var ih = h * scaleY;
+
+        if (ih < 3) continue;
+
+        var lineY = Math.round(ty / tolerance) * tolerance;
+
+        if (currentLine && Math.abs(lineY - lastY) < tolerance) {
+          currentLine.text += item.str;
+          var lineEndX = (tx + w) * scaleX;
+          var lineEndY = (viewport.height - ty - h) * scaleY;
+          currentLine.w = Math.max(currentLine.w, lineEndX - currentLine.x);
+          currentLine.h = Math.max(currentLine.h, (lineEndY + ih) - currentLine.y);
+          currentLine.fontSize = Math.max(currentLine.fontSize, ih);
+        } else {
+          currentLine = {
+            text: item.str,
+            x: x,
+            y: y,
+            w: iw,
+            h: ih,
+            fontSize: ih,
+            fontName: item.fontName || 'helvetica'
+          };
+          lines.push(currentLine);
+          lastY = lineY;
+        }
       }
-    });
 
-    div.addEventListener('mouseleave', function() {
-      if (div.contentEditable === 'false') {
-        div.style.borderColor = 'transparent';
-        div.style.background = 'transparent';
-      }
-    });
-
-    div.addEventListener('dblclick', function(e) {
-      e.stopPropagation();
-      self.startEditing(div, index);
-    });
-
-    div.addEventListener('click', function(e) {
-      e.stopPropagation();
-      if (div.contentEditable === 'true') return;
-      self.startEditing(div, index);
-    });
+      this.textItems = lines;
+    } catch (e) {
+      console.error('Error extracting text:', e);
+    }
   }
 
-  startEditing(div, index) {
+  bindEvents() {
     var self = this;
-    var block = this.textBlocks[index];
+    var annotationCanvas = document.getElementById('annotation-canvas');
 
-    div.contentEditable = 'true';
-    div.style.color = block.color || '#000000';
-    div.style.borderColor = '#6c63ff';
-    div.style.background = 'rgba(255,255,255,0.95)';
-    div.style.whiteSpace = 'pre-wrap';
-    div.style.overflow = 'visible';
-    div.style.minWidth = block.displayW + 'px';
-    div.focus();
+    this._clickHandler = function(e) { self.onCanvasClick(e); };
+    this._moveHandler = function(e) { self.onCanvasMove(e); };
 
-    var range = document.createRange();
-    range.selectNodeContents(div);
-    range.collapse(false);
-    var sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
+    annotationCanvas.addEventListener('click', this._clickHandler);
+    annotationCanvas.addEventListener('mousemove', this._moveHandler);
+  }
 
-    div.addEventListener('blur', function onBlur() {
-      div.removeEventListener('blur', onBlur);
-      self.finishEditing(div, index);
+  unbindEvents() {
+    var annotationCanvas = document.getElementById('annotation-canvas');
+    if (annotationCanvas && this._clickHandler) {
+      annotationCanvas.removeEventListener('click', this._clickHandler);
+    }
+    if (annotationCanvas && this._moveHandler) {
+      annotationCanvas.removeEventListener('mousemove', this._moveHandler);
+    }
+    this._clickHandler = null;
+    this._moveHandler = null;
+  }
+
+  getCanvasPos(e) {
+    var rect = e.target.getBoundingClientRect();
+    var sx = this.pdfViewer.canvas.width / rect.width;
+    var sy = this.pdfViewer.canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * sx,
+      y: (e.clientY - rect.top) * sy
+    };
+  }
+
+  findTextAt(pos) {
+    for (var i = 0; i < this.textItems.length; i++) {
+      var item = this.textItems[i];
+      if (pos.x >= item.x - 5 && pos.x <= item.x + item.w + 5 &&
+          pos.y >= item.y - 5 && pos.y <= item.y + item.h + 5) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  onCanvasMove(e) {
+    if (!this.active) return;
+    var pos = this.getCanvasPos(e);
+    var idx = this.findTextAt(pos);
+
+    var annotationCanvas = document.getElementById('annotation-canvas');
+    if (idx >= 0) {
+      annotationCanvas.style.cursor = 'text';
+      if (idx !== this.hoveredIndex) {
+        this.hoveredIndex = idx;
+        this.drawHighlights();
+      }
+    } else {
+      annotationCanvas.style.cursor = 'crosshair';
+      if (this.hoveredIndex !== -1) {
+        this.hoveredIndex = -1;
+        this.drawHighlights();
+      }
+    }
+  }
+
+  onCanvasClick(e) {
+    if (!this.active) return;
+    var pos = this.getCanvasPos(e);
+    var idx = this.findTextAt(pos);
+
+    if (idx >= 0) {
+      this.removeActiveInput();
+      this.createFloatingInput(idx, pos);
+    } else {
+      this.removeActiveInput();
+    }
+  }
+
+  createFloatingInput(textIndex, clickPos) {
+    var item = this.textItems[textIndex];
+    if (!item) return;
+
+    var wrapper = document.getElementById('canvas-wrapper');
+    if (!wrapper) return;
+
+    var dpr = this.pdfViewer.dpr || 1;
+    var displayX = item.x / dpr;
+    var displayY = item.y / dpr;
+    var displayW = Math.max(item.w / dpr, 100);
+    var displayH = item.h / dpr;
+
+    var input = document.createElement('textarea');
+    input.value = item.text;
+    input.className = 'text-edit-floating-input';
+    input.style.cssText =
+      'position:absolute;z-index:20;' +
+      'left:' + displayX + 'px;' +
+      'top:' + displayY + 'px;' +
+      'width:' + displayW + 'px;' +
+      'height:' + (displayH + 6) + 'px;' +
+      'font-size:' + (item.fontSize / dpr) + 'px;' +
+      'font-family:Helvetica,Arial,sans-serif;' +
+      'color:#000;' +
+      'background:rgba(255,255,255,0.97);' +
+      'border:2px solid #6c63ff;' +
+      'border-radius:3px;' +
+      'padding:2px 4px;' +
+      'outline:none;' +
+      'resize:none;' +
+      'overflow:hidden;' +
+      'line-height:1.2;' +
+      'white-space:pre-wrap;' +
+      'box-shadow:0 2px 12px rgba(108,99,255,0.25);';
+
+    var self = this;
+
+    input.addEventListener('blur', function() {
+      self.finishInput(textIndex, input);
     });
 
-    div.addEventListener('keydown', function(e) {
+    input.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') {
-        div.blur();
+        input.blur();
       }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        div.blur();
+        input.blur();
       }
     });
+
+    wrapper.appendChild(input);
+    this.activeInput = input;
+
+    input.focus();
+    input.select();
   }
 
-  finishEditing(div, index) {
-    var block = this.textBlocks[index];
-    var newText = div.textContent || div.innerText;
+  finishInput(textIndex, input) {
+    var item = this.textItems[textIndex];
+    var newText = input.value;
 
-    if (newText !== block.text) {
+    if (newText !== item.text && newText.trim() !== '') {
       this.changes.push({
         pageIndex: this.currentPage,
-        blockIndex: index,
-        originalText: block.text,
+        textIndex: textIndex,
+        originalText: item.text,
         newText: newText,
-        displayX: block.displayX,
-        displayY: block.displayY,
-        displayW: block.displayW,
-        displayH: block.displayH,
-        fontSize: block.fontSize
+        x: item.x,
+        y: item.y,
+        w: item.w,
+        h: item.h,
+        fontSize: item.fontSize
       });
-
-      block.text = newText;
-      if (window.app) window.app.showToast('Texto modificado', 'info');
+      item.text = newText;
+      if (window.app) window.app.showToast('Texto modificado: "' + newText.substring(0, 20) + '..."', 'info');
     }
 
-    div.contentEditable = 'false';
-    div.style.color = 'transparent';
-    div.style.borderColor = 'transparent';
-    div.style.background = 'transparent';
-    div.style.whiteSpace = 'nowrap';
-    div.style.overflow = 'hidden';
+    input.remove();
+    this.activeInput = null;
+    this.drawHighlights();
+  }
 
-    div.textContent = block.text;
+  removeActiveInput() {
+    if (this.activeInput) {
+      this.activeInput.remove();
+      this.activeInput = null;
+    }
+  }
+
+  drawHighlights() {
+    if (!this.highlightCtx) return;
+    var ctx = this.highlightCtx;
+    var dpr = this.pdfViewer.dpr || 1;
+
+    ctx.clearRect(0, 0, this.highlightCanvas.width, this.highlightCanvas.height);
+
+    for (var i = 0; i < this.textItems.length; i++) {
+      var item = this.textItems[i];
+      var isHovered = (i === this.hoveredIndex);
+
+      ctx.strokeStyle = isHovered ? '#6c63ff' : 'rgba(108,99,255,0.3)';
+      ctx.lineWidth = isHovered ? 2.5 : 1.5;
+      ctx.setLineDash(isHovered ? [] : [4, 3]);
+
+      ctx.strokeRect(item.x - 2, item.y - 2, item.w + 4, item.h + 4);
+
+      if (isHovered) {
+        ctx.fillStyle = 'rgba(108,99,255,0.08)';
+        ctx.fillRect(item.x - 2, item.y - 2, item.w + 4, item.h + 4);
+      }
+    }
+
+    ctx.setLineDash([]);
+  }
+
+  updateStatus() {
+    if (this.active && window.app) {
+      document.getElementById('status-tool').textContent =
+        'Herramienta: Editar texto (' + this.textItems.length + ' bloques detectados)';
+    }
   }
 
   async applyChangesToPdf(pdfDoc) {
+    if (this.changes.length === 0) return pdfDoc.save();
     var rgb = PDFLib.rgb;
-
     var pages = pdfDoc.getPages();
 
     for (var i = 0; i < this.changes.length; i++) {
@@ -266,24 +343,22 @@ class TextEditMode {
       try {
         var pageData = await this.pdfViewer.pdfDoc.getPage(change.pageIndex);
         var viewport = pageData.getViewport({ scale: 1 });
-        var pageH = page.getHeight();
-
         var canvasW = this.pdfViewer.canvas.width;
         var displayW = canvasW / (this.pdfViewer.dpr || 1);
         var displayH = this.pdfViewer.canvas.height / (this.pdfViewer.dpr || 1);
         var scaleX = viewport.width / displayW;
         var scaleY = viewport.height / displayH;
+        var pageH = page.getHeight();
 
-        var pdfX = change.displayX * scaleX;
-        var pdfY = pageH - (change.displayY * scaleY) - (change.displayH * scaleY);
+        var pdfX = change.x * scaleX;
+        var pdfY = pageH - (change.y * scaleY) - (change.h * scaleY);
 
-        var whiteColor = rgb(1, 1, 1);
         page.drawRectangle({
           x: pdfX - 1,
           y: pdfY - 1,
-          width: change.displayW * scaleX + 2,
-          height: change.displayH * scaleY + 2,
-          color: whiteColor,
+          width: change.w * scaleX + 2,
+          height: change.h * scaleY + 2,
+          color: rgb(1, 1, 1),
           borderWidth: 0
         });
 
@@ -292,7 +367,7 @@ class TextEditMode {
           var fontSizeInPdf = change.fontSize * scaleX;
           page.drawText(change.newText, {
             x: pdfX,
-            y: pdfY + 1,
+            y: pdfY + 2,
             size: fontSizeInPdf,
             font: font,
             color: rgb(0, 0, 0)

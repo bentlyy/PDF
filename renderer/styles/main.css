@@ -623,3 +623,14 @@ body.light-theme #signature-canvas {
 body.light-theme .sig-upload-area {
   background: var(--bg-tertiary);
 }
+
+/* Text Edit Floating Input */
+.text-edit-floating-input {
+  font-family: Helvetica, Arial, sans-serif !important;
+  -webkit-text-fill-color: #000 !important;
+}
+
+.text-edit-floating-input:focus {
+  border-color: #6c63ff !important;
+  box-shadow: 0 2px 16px rgba(108,99,255,0.35) !important;
+}

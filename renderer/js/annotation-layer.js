@@ -67,6 +67,7 @@ class AnnotationLayer {
   }
 
   onMouseDown(e) {
+    if (window.app && window.app.textEditMode && window.app.textEditMode.active) return;
     var pos = this.getMousePos(e);
 
     switch (this.currentTool) {
@@ -92,6 +93,7 @@ class AnnotationLayer {
   }
 
   onMouseMove(e) {
+    if (window.app && window.app.textEditMode && window.app.textEditMode.active) return;
     var pos = this.getMousePos(e);
 
     if (this.currentTool === 'select' && this.isDragging) {
