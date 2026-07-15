@@ -1,0 +1,50 @@
+{
+  "name": "editor-pdf",
+  "version": "1.0.0",
+  "description": "Editor de PDF completo con visualizador, anotaciones, firmas y más",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.editorpdf.app",
+    "productName": "Editor PDF",
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false,
+      "sign": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Editor PDF"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ]
+  },
+  "keywords": [
+    "pdf",
+    "editor",
+    "viewer",
+    "annotations",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "pdf-lib": "1.17.1"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "25.1.8"
+  }
+}
